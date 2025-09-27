@@ -1,0 +1,42 @@
+# AI Paimon Backend Configuration
+# 开发环境配置
+
+# 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  debug: true
+
+# 特征开关
+features:
+  kb:
+    enabled: false
+  viseme:
+    rhubarb: false
+    ovr: false
+  avatar:
+    mode: "live2d"  # live2d|vrm
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Mock服务配置
+mock:
+  asr:
+    delay_ms: 100
+    response_texts:
+      - "你好"
+      - "今天天气怎么样"
+      - "派蒙想吃好吃的"
+
+  dialog:
+    response_templates:
+      - "欸！旅行者说的话，派蒙听不太懂呢..."
+      - "哇～这个派蒙知道！"
+      - "唔...让派蒙想想看"
+
+  tts:
+    sample_rate: 24000
+    chunk_size: 1024
