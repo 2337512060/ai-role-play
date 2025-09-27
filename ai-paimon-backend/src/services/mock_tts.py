@@ -1,6 +1,6 @@
 """
 TTS语音合成Mock服务
-模拟语音合成的业务逻辑
+模拟语音合成的业务逻辑，继承BaseTTSProvider
 """
 
 import asyncio
@@ -8,22 +8,28 @@ import base64
 import json
 import random
 import time
-from typing import List, Optional
+from typing import List, Optional, Union, AsyncGenerator
 
 import numpy as np
 
-from ..models.websocket import (
-    TTSRequestMessage,
-    TTSAudioMessage,
-    TTSMarkerMessage,
-    TTSEndMessage
+from .tts_provider import (
+    BaseTTSProvider,
+    TTSProviderType,
+    TTSRequest,
+    AudioChunk,
+    PhonemeMarker,
+    TTSAudioStreamMessage,
+    TTSMarkerStreamMessage,
+    TTSEndStreamMessage,
+    TTSErrorStreamMessage
 )
 
 
-class MockTTSService:
-    """Mock TTS服务"""
+class MockTTSService(BaseTTSProvider):
+    """Mock TTS服务，兼容新的provider接口"""
 
     def __init__(self):
+        super().__init__(TTSProviderType.MOCK)
         self.sample_rate = 24000
         self.chunk_size = 1024
 
@@ -47,6 +53,11 @@ class MockTTSService:
             "西": ["X", "I"],
         }
 
+    async def check_health(self) -> bool:
+        """Mock TTS总是健康的"""
+        self.mark_healthy()
+        return True
+
     def _estimate_duration(self, text: str, speed: float = 1.0) -> float:
         """估算合成音频时长"""
         # 中文平均语速约 4-5 字/秒
@@ -54,7 +65,7 @@ class MockTTSService:
         adjusted_duration = base_duration / speed
         return max(adjusted_duration, 0.5)  # 最少0.5秒
 
-    def _generate_phoneme_markers(self, text: str, duration: float) -> List[dict]:
+    def _generate_phoneme_markers(self, text: str, duration: float) -> List[PhonemeMarker]:
         """生成音素标记"""
         markers = []
         char_count = len(text)
@@ -68,32 +79,32 @@ class MockTTSService:
         for char in text:
             if char.isspace() or char in "，。！？；：":
                 # 标点符号添加静音
-                markers.append({
-                    "type": "marker",
-                    "phoneme": "SIL",
-                    "t": round(current_time, 3),
-                    "duration": round(char_duration, 3)
-                })
+                markers.append(PhonemeMarker(
+                    phoneme="SIL",
+                    timestamp=current_time,
+                    duration=char_duration,
+                    confidence=1.0
+                ))
             elif char in self.phoneme_map:
                 # 有映射的字符
                 phonemes = self.phoneme_map[char]
                 phoneme_duration = char_duration / len(phonemes)
 
                 for i, phoneme in enumerate(phonemes):
-                    markers.append({
-                        "type": "marker",
-                        "phoneme": phoneme,
-                        "t": round(current_time + i * phoneme_duration, 3),
-                        "duration": round(phoneme_duration, 3)
-                    })
+                    markers.append(PhonemeMarker(
+                        phoneme=phoneme,
+                        timestamp=current_time + i * phoneme_duration,
+                        duration=phoneme_duration,
+                        confidence=0.9
+                    ))
             else:
                 # 其他字符使用通用音素
-                markers.append({
-                    "type": "marker",
-                    "phoneme": "X",
-                    "t": round(current_time, 3),
-                    "duration": round(char_duration, 3)
-                })
+                markers.append(PhonemeMarker(
+                    phoneme="X",
+                    timestamp=current_time,
+                    duration=char_duration,
+                    confidence=0.7
+                ))
 
             current_time += char_duration
 
@@ -128,23 +139,39 @@ class MockTTSService:
         audio_bytes = audio_int16.tobytes()
         return base64.b64encode(audio_bytes).decode('utf-8')
 
-    async def synthesize_text(self, websocket, request_data: dict):
-        """合成文本为语音"""
-        text = request_data.get("text", "")
-        voice = request_data.get("voice", "female_general")
-        speed = request_data.get("speed", 1.0)
+    async def synthesize_stream(
+        self,
+        request: TTSRequest,
+        session_id: str,
+        trace_id: str
+    ) -> AsyncGenerator[Union[TTSAudioStreamMessage, TTSMarkerStreamMessage,
+                             TTSEndStreamMessage, TTSErrorStreamMessage], None]:
+        """
+        流式语音合成
 
-        if not text:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "code": "EMPTY_TEXT",
-                "message": "Text cannot be empty"
-            }))
-            return
+        Args:
+            request: TTS请求参数
+            session_id: 会话ID
+            trace_id: 追踪ID
+
+        Yields:
+            TTSStreamMessage: 流消息
+        """
+        self.start_timing()
 
         try:
+            text = request.text
+            if not text:
+                yield TTSErrorStreamMessage(
+                    code="EMPTY_TEXT",
+                    message="Text cannot be empty",
+                    session_id=session_id,
+                    trace_id=trace_id
+                )
+                return
+
             # 估算总时长
-            total_duration = self._estimate_duration(text, speed)
+            total_duration = self._estimate_duration(text, request.speed)
 
             # 生成音素标记
             phoneme_markers = self._generate_phoneme_markers(text, total_duration)
@@ -168,21 +195,34 @@ class MockTTSService:
                     frequency=200 + random.uniform(0, 200)  # 模拟女声频率范围
                 )
 
-                # 发送音频数据
-                await websocket.send_text(json.dumps({
-                    "type": "audio",
-                    "pcm_base64": audio_base64,
-                    "sr": self.sample_rate,
-                    "chunk_id": chunk_id
-                }))
+                # 计算块时长
+                chunk_duration_ms = (self.chunk_size / self.sample_rate) * 1000
+
+                # 创建音频消息
+                audio_chunk = AudioChunk(
+                    pcm_base64=audio_base64,
+                    chunk_id=chunk_id,
+                    sample_rate=self.sample_rate,
+                    duration_ms=chunk_duration_ms
+                )
+
+                yield TTSAudioStreamMessage(
+                    chunk=audio_chunk,
+                    session_id=session_id,
+                    trace_id=trace_id
+                )
 
                 # 发送对应时间的音素标记
                 chunk_duration = self.chunk_size / self.sample_rate
                 chunk_end_time = current_time + chunk_duration
 
                 while (marker_index < len(phoneme_markers) and
-                       phoneme_markers[marker_index]["t"] < chunk_end_time):
-                    await websocket.send_text(json.dumps(phoneme_markers[marker_index]))
+                       phoneme_markers[marker_index].timestamp < chunk_end_time):
+                    yield TTSMarkerStreamMessage(
+                        marker=phoneme_markers[marker_index],
+                        session_id=session_id,
+                        trace_id=trace_id
+                    )
                     marker_index += 1
 
                 # 模拟流式传输延迟
@@ -193,25 +233,63 @@ class MockTTSService:
 
             # 发送剩余的音素标记
             while marker_index < len(phoneme_markers):
-                await websocket.send_text(json.dumps(phoneme_markers[marker_index]))
+                yield TTSMarkerStreamMessage(
+                    marker=phoneme_markers[marker_index],
+                    session_id=session_id,
+                    trace_id=trace_id
+                )
                 marker_index += 1
 
+            # 计算RTF
+            rtf = self.get_rtf(total_duration)
+
             # 发送结束消息
-            await websocket.send_text(json.dumps({
-                "type": "end",
-                "duration": round(total_duration, 3),
-                "total_chunks": chunk_count
-            }))
+            yield TTSEndStreamMessage(
+                duration=total_duration,
+                total_chunks=chunk_count,
+                rtf=rtf,
+                session_id=session_id,
+                trace_id=trace_id
+            )
 
         except Exception as e:
+            yield TTSErrorStreamMessage(
+                code="SYNTHESIS_ERROR",
+                message=str(e),
+                session_id=session_id,
+                trace_id=trace_id
+            )
+
+    # 保持向后兼容的方法
+    async def synthesize_text(self, websocket, request_data: dict, session_id: str, trace_id: str):
+        """合成文本为语音（兼容旧接口）"""
+        text = request_data.get("text", "")
+        voice = request_data.get("voice", "female_general")
+        speed = request_data.get("speed", 1.0)
+
+        if not text:
             await websocket.send_text(json.dumps({
                 "type": "error",
-                "code": "SYNTHESIS_ERROR",
-                "message": str(e)
+                "code": "EMPTY_TEXT",
+                "message": "Text cannot be empty",
+                "session_id": session_id,
+                "trace_id": trace_id
             }))
+            return
 
-    async def process_tts_requests(self, websocket, session_id: str):
-        """处理TTS请求"""
+        # 转换为新接口
+        tts_request = TTSRequest(
+            text=text,
+            voice=voice,
+            speed=speed
+        )
+
+        # 使用新的流式接口
+        async for message in self.synthesize_stream(tts_request, session_id, trace_id):
+            await websocket.send_text(json.dumps(message.to_dict()))
+
+    async def process_tts_requests(self, websocket, session_id: str, trace_id: str):
+        """处理TTS请求（兼容旧接口）"""
         try:
             async for message in websocket.iter_text():
                 try:
@@ -219,25 +297,31 @@ class MockTTSService:
 
                     # 检查是否有必需的字段
                     if "text" in request_data:
-                        await self.synthesize_text(websocket, request_data)
+                        await self.synthesize_text(websocket, request_data, session_id, trace_id)
                     else:
                         await websocket.send_text(json.dumps({
                             "type": "error",
                             "code": "INVALID_REQUEST",
-                            "message": "Missing required field: text"
+                            "message": "Missing required field: text",
+                            "session_id": session_id,
+                            "trace_id": trace_id
                         }))
 
                 except json.JSONDecodeError:
                     await websocket.send_text(json.dumps({
                         "type": "error",
                         "code": "INVALID_JSON",
-                        "message": "Invalid JSON format"
+                        "message": "Invalid JSON format",
+                        "session_id": session_id,
+                        "trace_id": trace_id
                     }))
                 except Exception as e:
                     await websocket.send_text(json.dumps({
                         "type": "error",
                         "code": "PROCESSING_ERROR",
-                        "message": str(e)
+                        "message": str(e),
+                        "session_id": session_id,
+                        "trace_id": trace_id
                     }))
 
         except Exception as e:

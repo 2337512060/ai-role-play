@@ -22,6 +22,98 @@ logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+# ASR服务配置
+asr:
+  # 服务模式：'mock' 或 'siliconflow'
+  service_mode: "mock"  # 默认使用Mock服务，改为"siliconflow"启用真实API
+
+  # 硅基流动 API 配置
+  siliconflow:
+    api_url: "https://api.siliconflow.cn/v1/audio/transcriptions"
+    model: "TeleAI/TeleSpeechASR"
+    timeout: 10.0
+    max_retries: 3
+
+  # VAD (Voice Activity Detection) 配置
+  vad:
+    frame_length_ms: 25          # 帧长 20-30ms
+    energy_threshold: 500.0      # RMS能量阈值
+    min_speech_duration_ms: 200  # 最小语音时长
+    silence_duration_ms: 400     # 尾静音判终止时长
+
+  # 音频处理配置
+  audio:
+    sample_rate: 16000           # 采样率
+    max_buffer_duration: 10.0    # 最大缓冲时长(秒)
+    chunk_overlap_ms: 50         # 块重叠时长，确保连续性
+
+# 对话服务配置
+dialog:
+  # 服务模式：'mock' 或 'fsm'
+  service_mode: "mock"  # 默认使用Mock服务，改为"fsm"启用FSM对话系统
+
+  # FSM配置
+  fsm:
+    max_transitions: 20           # 最大状态转换次数
+    kb_search_timeout: 5.0        # KB搜索超时时间（秒）
+    enable_style_fuse: false      # 启用风格融合（Module 04）
+    enable_safety: true           # 启用安全检查（Module 05）
+
+  # StyleFuse风格融合配置
+  style_fuse:
+    enabled: true                 # 启用风格融合
+    target_avg_length: 19         # 目标平均句长
+    question_ratio_min: 0.45      # 问句比例下限
+    question_ratio_max: 0.55      # 问句比例上限
+    exclamation_ratio_min: 0.25   # 感叹句比例下限
+    exclamation_ratio_max: 0.35   # 感叹句比例上限
+    ellipsis_ratio_min: 0.15      # 省略号比例下限
+    ellipsis_ratio_max: 0.25      # 省略号比例上限
+    mood_particle_density: 0.6    # 语气词密度（每1-2句一次）
+    max_sentence_length: 35       # 句子最大长度
+    min_sentence_length: 8        # 句子最小长度
+    max_total_length: 160         # 回复最大总长度
+    min_total_length: 10          # 回复最小总长度
+    address_term: "旅行者"         # 称呼用词
+    max_rewrite_attempts: 2       # 最大重写尝试次数
+
+# 安全检查配置
+safety:
+  enabled: true                   # 启用安全检查
+
+  # 分类阈值配置 (0.0-1.0)
+  illegal_threshold: 0.7          # 违法内容阈值
+  explicit_threshold: 0.8         # 露骨内容阈值
+  minor_unsafe_threshold: 0.6     # 未成年人不宜阈值
+  violence_threshold: 0.75        # 暴力内容阈值
+  harassment_threshold: 0.7       # 骚扰内容阈值
+  privacy_threshold: 0.9          # 隐私泄露阈值
+  spam_threshold: 0.8             # 垃圾信息阈值
+  polarizing_threshold: 0.6       # 极化内容阈值
+
+  # 检查组件开关
+  keyword_filter_enabled: true    # 启用关键词过滤
+  regex_filter_enabled: true      # 启用正则表达式过滤
+  classifier_enabled: true        # 启用分类器
+  context_check_enabled: true     # 启用上下文检查
+
+  # 处理配置
+  max_processing_time: 1000.0     # 最大处理时间(毫秒)
+  whitelist_enabled: true         # 启用白名单
+  escalation_enabled: true        # 启用升级提醒
+  redirect_enabled: true          # 启用话题转向
+
+  # 自定义关键词 (可选，用于增强检测)
+  custom_keywords:
+    illegal: []                   # 自定义违法内容关键词
+    explicit: []                  # 自定义露骨内容关键词
+    violence: []                  # 自定义暴力内容关键词
+
+  # NLU配置
+  nlu:
+    min_confidence_threshold: 0.3  # 最小置信度阈值
+    fallback_policy: "chitchat"    # 回退策略
+
 # Mock服务配置
 mock:
   asr:
@@ -38,5 +130,35 @@ mock:
       - "唔...让派蒙想想看"
 
   tts:
+    # 基础音频参数
     sample_rate: 24000
     chunk_size: 1024
+
+    # Provider配置
+    primary_provider: "fishaudio"  # mock | fishaudio
+    fallback_providers: ["mock"]
+
+    # FishAudio配置
+    fishaudio_api_key: ""  # 从环境变量FISHAUDIO_API_KEY读取
+    fishaudio_model_id: "304d6864fe86478c922e72a7b41973f7"
+
+    # 合成参数
+    default_voice: "female_general"
+    default_speed: 1.0
+    default_volume: 0.0
+    default_temperature: 0.7
+    default_top_p: 0.7
+
+    # 流式参数
+    chunk_length: 200
+    audio_format: "pcm"
+    enable_emotions: true
+
+    # 性能参数
+    max_retries: 3
+    retry_delay: 1.0
+    timeout_seconds: 30.0
+
+    # 音素标记
+    enable_phoneme_markers: true
+    marker_confidence_threshold: 0.5
